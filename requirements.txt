@@ -1,0 +1,8 @@
+# Local STT/Piper providers plus online Microsoft Edge Neural TTS.
+faster-whisper==1.2.1
+numpy==2.5.3
+piper-tts==1.8.0
+sounddevice==0.5.6
+av==19.0.0
+edge-tts==7.2.8
+Pillow>=11.0.0
