@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from app.ai.base import AIProvider, AIProviderError, ChatMessage
+from app.ai.base import AIProvider, AIProviderError, ChatMessage, ProviderError
 
 
 class VeronicaRole(StrEnum):
@@ -235,7 +235,7 @@ def classify_role(
     ]
     try:
         raw = provider.generate_response(classifier_messages)
-    except AIProviderError:
+    except (AIProviderError, ProviderError):
         return RoleDecision(role=VeronicaRole.ASSISTANT)
     if not isinstance(raw, str):
         return RoleDecision(role=VeronicaRole.ASSISTANT)

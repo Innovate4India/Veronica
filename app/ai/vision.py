@@ -1,101 +1,123 @@
-"""Local Ollama vision orchestration for one explicitly requested screen capture."""
+"""Provider-neutral vision orchestration for explicitly requested screen captures."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
-
-from app.ai.ollama_client import (
-    OllamaClient,
-    OllamaConnectionError,
-    OllamaModelUnavailableError,
-    OllamaTimeoutError,
+from app.ai.base import (
+    ProviderConnectionError,
+    ProviderModelUnavailableError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    VisionProvider,
+    VisionRequest,
+    VisionResponse,
 )
 from app.tools.base import ToolUnavailableError
 from app.tools.screenshot import capture_primary_screen
 
-if TYPE_CHECKING:
-    from PIL import Image
-
-
-class _VisionClient(Protocol):
-    def list_models(self) -> tuple[str, ...]: ...
-
-    def generate_vision_response(
-        self,
-        model: str,
-        question: str,
-        image: Image.Image,
-    ) -> str: ...
-
-
 class LocalVisionService:
-    """Use only the configured local Ollama model for a transient screen image."""
+    """Use a provider-neutral vision adapter for one transient screen image."""
 
     def __init__(
         self,
-        client: _VisionClient | OllamaClient,
-        model: str,
+        provider: VisionProvider | None,
     ) -> None:
-        self._client = client
-        self._model = model.strip()
+        if provider is not None and not isinstance(provider, VisionProvider):
+            raise TypeError("Vision service requires a VisionProvider.")
+        self._provider = provider
 
     @property
     def model_configured(self) -> bool:
-        return bool(self._model)
+        return (
+            self._provider is not None
+            and self._provider.model_configured
+        )
 
     def understand_primary_screen(self, question: str) -> str:
         """Capture, ask the preinstalled local model, then close the image."""
-        if not self._model:
+        if self._provider is None:
             raise ToolUnavailableError(
                 "Local screen understanding is unavailable because "
-                "OLLAMA_VISION_MODEL is not configured."
+                "the selected AI provider does not support vision."
+            )
+        if not self._provider.model_configured:
+            raise ToolUnavailableError(
+                getattr(
+                    self._provider,
+                    "missing_model_message",
+                    "Local screen understanding is unavailable because no "
+                    "vision model is configured.",
+                )
             )
 
         try:
-            installed_models = self._client.list_models()
-        except OllamaTimeoutError:
+            available = self._provider.model_available()
+        except ProviderTimeoutError:
             raise TimeoutError("The local vision request timed out.") from None
-        except OllamaModelUnavailableError:
+        except ProviderModelUnavailableError:
             raise ToolUnavailableError(
-                "The configured local vision model is unavailable."
+                getattr(
+                    self._provider,
+                    "model_unavailable_message",
+                    "The configured local vision model is unavailable.",
+                )
             ) from None
-        except OllamaConnectionError:
+        except ProviderConnectionError:
             raise ToolUnavailableError(
-                "The local Ollama vision service is unavailable."
+                getattr(
+                    self._provider,
+                    "connection_error_message",
+                    "The local vision service is unavailable.",
+                )
             ) from None
-        if not _model_is_installed(self._model, installed_models):
+        if not available:
             raise ToolUnavailableError(
-                "The configured local vision model is not installed in Ollama."
+                getattr(
+                    self._provider,
+                    "model_not_installed_message",
+                    "The configured local vision model is not installed.",
+                )
             )
 
         image = capture_primary_screen()
         try:
             try:
-                answer = self._client.generate_vision_response(
-                    self._model,
-                    question,
-                    image,
+                response = self._provider.generate_vision(
+                    VisionRequest(
+                        question=question,
+                        image=image,
+                    )
                 )
-            except OllamaTimeoutError:
+                if not isinstance(response, VisionResponse):
+                    raise ProviderResponseError(
+                        "The vision provider returned an invalid response."
+                    )
+                if not isinstance(response.text, str):
+                    raise ProviderResponseError(
+                        "The vision provider returned invalid response text."
+                    )
+                answer = response.text
+            except ProviderTimeoutError:
                 raise TimeoutError("The local vision request timed out.") from None
-            except OllamaModelUnavailableError:
+            except ProviderModelUnavailableError:
                 raise ToolUnavailableError(
-                    "The configured local vision model is unavailable."
+                    getattr(
+                        self._provider,
+                        "model_unavailable_message",
+                        "The configured local vision model is unavailable.",
+                    )
                 ) from None
-            except OllamaConnectionError:
+            except ProviderConnectionError:
                 raise ToolUnavailableError(
-                    "The local Ollama vision service is unavailable."
+                    getattr(
+                        self._provider,
+                        "connection_error_message",
+                        "The local vision service is unavailable.",
+                    )
                 ) from None
             if not answer.strip():
-                raise ValueError("The local vision model returned no description.")
+                raise ProviderResponseError(
+                    "The vision provider returned an empty response."
+                )
             return answer.strip()
         finally:
             image.close()
-
-
-def _model_is_installed(model: str, installed_models: tuple[str, ...]) -> bool:
-    normalized = model.casefold()
-    installed = {name.casefold() for name in installed_models}
-    if ":" in normalized:
-        return normalized in installed
-    return normalized in installed or f"{normalized}:latest" in installed

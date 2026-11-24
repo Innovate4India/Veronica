@@ -23,6 +23,13 @@ class OllamaConfig:
 
 
 @dataclass(frozen=True)
+class ProviderSelectionConfig:
+    """Implementation-independent selection of the active AI provider."""
+
+    provider_name: str
+
+
+@dataclass(frozen=True)
 class WhisperConfig:
     """Settings for local-only faster-whisper inference."""
 
@@ -154,6 +161,17 @@ def load_ollama_config(
         raise ValueError("OLLAMA_TIMEOUT must be a positive number of seconds.")
 
     return OllamaConfig(base_url=base_url.rstrip("/"), model=model, timeout=timeout)
+
+
+def load_provider_selection_config(
+    environ: Mapping[str, str] | None = None,
+) -> ProviderSelectionConfig:
+    """Load the selected registered provider; Ollama remains the default."""
+    values = os.environ if environ is None else environ
+    provider_name = values.get("VERONICA_AI_PROVIDER", "ollama").strip().casefold()
+    if not provider_name:
+        raise ValueError("VERONICA_AI_PROVIDER must not be empty.")
+    return ProviderSelectionConfig(provider_name=provider_name)
 
 
 def load_ollama_vision_model(
@@ -364,11 +382,6 @@ def _load_optional_model_path(configured_path: str) -> Path | None:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-_OLLAMA_CONFIG = load_ollama_config()
-OLLAMA_BASE_URL = _OLLAMA_CONFIG.base_url
-OLLAMA_MODEL = _OLLAMA_CONFIG.model
-OLLAMA_TIMEOUT = _OLLAMA_CONFIG.timeout
-OLLAMA_VISION_MODEL = load_ollama_vision_model()
 MAX_CONVERSATION_MESSAGES = load_max_conversation_messages()
 MEMORY_DATABASE_PATH = load_memory_database_path()
 MAX_RELEVANT_MEMORIES = load_max_relevant_memories()
@@ -380,3 +393,16 @@ WHISPER_COMPUTE_TYPE = _WHISPER_CONFIG.compute_type
 _PIPER_CONFIG = load_piper_config()
 PIPER_MODEL = _PIPER_CONFIG.model
 PIPER_MODEL_PATH = _PIPER_CONFIG.model_path
+
+
+def __getattr__(name: str) -> object:
+    if name in {"OLLAMA_BASE_URL", "OLLAMA_MODEL", "OLLAMA_TIMEOUT"}:
+        config = load_ollama_config()
+        return {
+            "OLLAMA_BASE_URL": config.base_url,
+            "OLLAMA_MODEL": config.model,
+            "OLLAMA_TIMEOUT": config.timeout,
+        }[name]
+    if name == "OLLAMA_VISION_MODEL":
+        return load_ollama_vision_model()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -28,7 +28,7 @@ class _ScreenVisionService(Protocol):
 
 
 class ScreenUnderstandingTool(Tool):
-    """Capture and ask the configured local Ollama vision model about the screen."""
+    """Capture and ask the configured local vision provider about the screen."""
 
     def __init__(self, vision_service: _ScreenVisionService) -> None:
         self._vision_service = vision_service
@@ -44,7 +44,7 @@ class ScreenUnderstandingTool(Tool):
             "on their screen, asks you to look at or describe it, identify an "
             "open application, or read visible text. Captures only the primary "
             "display and sends that in-memory image only to the configured "
-            "local Ollama vision model. This tool does not accept image data, "
+            "local vision provider. This tool does not accept image data, "
             "URLs, paths, model names, or capture targets. If local vision is "
             "unavailable, report that limitation and do not guess screen "
             "contents. This is one explicit capture, not monitoring or "

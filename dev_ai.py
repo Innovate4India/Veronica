@@ -1,4 +1,4 @@
-"""Safe interactive developer interface for the local Ollama model."""
+"""Safe interactive developer interface for the configured local AI provider."""
 
 import sqlite3
 import sys
@@ -6,23 +6,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.ai import (
+    AIProvider,
     AIService,
     AIServiceError,
-    OllamaClient,
-    OllamaConfigurationError,
-    OllamaConnectionError,
-    OllamaResponseError,
-    OllamaTimeoutError,
-    OllamaToolCallingService,
+    ProviderCapabilityError,
+    ProviderModelUnavailableError,
+    ProviderConfigurationError,
+    ProviderConnectionError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ToolCallingService,
+    create_provider,
 )
+from app.ai.base import ProviderError
 from app.ai.vision import LocalVisionService
 from app.config import (
     MAX_RELEVANT_MEMORIES,
     MEMORY_DATABASE_PATH,
     WebSearchConfig,
     load_file_search_roots,
-    load_ollama_config,
-    load_ollama_vision_model,
     load_spoken_response_config,
     load_web_search_config,
     load_web_search_enabled,
@@ -49,16 +51,19 @@ from app.tools import (
 )
 
 
-OLLAMA_UNAVAILABLE_MESSAGE = (
-    "Veronica cannot reach the local AI engine. "
-    "Please make sure Ollama is running."
+AI_PROVIDER_UNAVAILABLE_MESSAGE = (
+    "Veronica cannot reach the configured local AI provider."
 )
+
+
+def _create_provider() -> AIProvider:
+    return create_provider()
 
 
 def _create_tool_registry(
     web_search_config: WebSearchConfig,
     file_search_roots: tuple[Path, ...],
-    ollama_client: OllamaClient,
+    provider: AIProvider,
 ) -> ToolRegistry:
     tool_registry = ToolRegistry()
     tool_registry.register(WebSearchTool(config=web_search_config))
@@ -68,14 +73,14 @@ def _create_tool_registry(
     tool_registry.register(OpenURLTool())
     tool_registry.register(AppLauncherTool())
     tool_registry.register(ScreenshotTool())
-    tool_registry.register(
-        ScreenUnderstandingTool(
-            LocalVisionService(
-                client=ollama_client,
-                model=load_ollama_vision_model(),
+    if provider.metadata.capabilities.vision:
+        vision_provider = provider.create_vision_provider()
+        if vision_provider is not None:
+            tool_registry.register(
+                ScreenUnderstandingTool(
+                    LocalVisionService(vision_provider)
+                )
             )
-        )
-    )
     return tool_registry
 
 
@@ -208,11 +213,6 @@ def main() -> int:
         reconfigure_stdout(encoding="utf-8")
 
     try:
-        config = load_ollama_config()
-    except ValueError as error:
-        print(f"Ollama configuration error: {error}")
-        return 2
-    try:
         spoken_response_config = load_spoken_response_config()
     except ValueError as error:
         print(f"Spoken response configuration error: {error}")
@@ -222,38 +222,30 @@ def main() -> int:
     except ValueError as error:
         print(f"Web search configuration error: {error}")
         return 2
-    if not config.model:
-        print(
-            "OLLAMA_MODEL is not configured. Choose and install a model explicitly, "
-            "then set OLLAMA_MODEL to its name. For example:\n"
-            "  ollama pull llama3.2\n"
-            '  $env:OLLAMA_MODEL = "llama3.2"'
-        )
-        return 2
-
     try:
-        client = OllamaClient(config)
-        available_models = client.list_models()
-    except OllamaConfigurationError as error:
-        print(f"Ollama configuration error: {error}")
+        provider = _create_provider()
+        provider.validate_startup()
+    except ProviderConfigurationError:
+        print("The configured AI provider has invalid configuration.")
         return 2
-    except OllamaTimeoutError:
-        print(OLLAMA_UNAVAILABLE_MESSAGE)
-        return 1
-    except OllamaConnectionError:
-        print(OLLAMA_UNAVAILABLE_MESSAGE)
-        return 1
-    except OllamaResponseError as error:
-        print(f"The local Ollama service returned an invalid response: {error}")
-        return 1
-
-    expected_names = {config.model}
-    if ":" not in config.model:
-        expected_names.add(f"{config.model}:latest")
-    if not expected_names.intersection(available_models):
-        print(f"Configured model {config.model!r} is not installed locally.")
-        print(f"Install it explicitly with: ollama pull {config.model}")
+    except ProviderCapabilityError:
+        print("The configured AI provider does not support a required capability.")
         return 2
+    except ProviderModelUnavailableError:
+        print("The configured AI provider model is unavailable.")
+        return 2
+    except ProviderTimeoutError:
+        print(AI_PROVIDER_UNAVAILABLE_MESSAGE)
+        return 1
+    except ProviderConnectionError:
+        print(AI_PROVIDER_UNAVAILABLE_MESSAGE)
+        return 1
+    except ProviderResponseError:
+        print("The AI provider returned an invalid response.")
+        return 1
+    except ProviderError:
+        print("The configured AI provider could not be started.")
+        return 1
 
     try:
         memory_service = MemoryService(
@@ -276,14 +268,18 @@ def main() -> int:
         except ValueError as error:
             print(f"File search configuration error: {error}")
             return 2
-        tool_registry = _create_tool_registry(
-            web_search_config,
-            file_search_roots,
-            client,
-        )
-        tool_calling_service = OllamaToolCallingService(client, tool_registry)
+        try:
+            tool_registry = _create_tool_registry(
+                web_search_config,
+                file_search_roots,
+                provider,
+            )
+            tool_calling_service = ToolCallingService(provider, tool_registry)
+        except ProviderCapabilityError:
+            print("Configured AI provider cannot support enabled tools.")
+            return 2
     service = AIService(
-        client,
+        provider,
         memory_service=memory_service,
         tool_calling_service=tool_calling_service,
     )
@@ -347,8 +343,8 @@ def main() -> int:
                     spoken_response_config.language,
                 )
         except AIServiceError as error:
-            if isinstance(error.__cause__, OllamaConnectionError):
-                print(OLLAMA_UNAVAILABLE_MESSAGE, file=sys.stderr)
+            if isinstance(error.__cause__, ProviderConnectionError):
+                print(AI_PROVIDER_UNAVAILABLE_MESSAGE, file=sys.stderr)
             else:
                 print(f"Veronica could not respond: {error}", file=sys.stderr)
 

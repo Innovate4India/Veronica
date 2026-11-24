@@ -5,7 +5,14 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Protocol
 
-from app.ai.base import AIProvider, AIProviderError, ChatMessage
+from app.ai.base import (
+    AIProvider,
+    AIProviderError,
+    ChatMessage,
+    ProviderError,
+    ToolCall,
+    ToolCallTextParser,
+)
 from app.ai.personality import VERONICA_SYSTEM_PROMPT
 from app.ai.roles import (
     RoleDecision,
@@ -21,10 +28,6 @@ from app.ai.teacher_quality import (
     teacher_quality_guidance,
     teacher_retry_instruction,
     validate_teacher_response,
-)
-from app.ai.tool_calling import (
-    contains_tool_call_envelope,
-    contains_web_search_tool_marker,
 )
 from app.config import MAX_CONVERSATION_MESSAGES
 from app.memory import (
@@ -63,7 +66,7 @@ The tool does not inspect or interact with websites.
 The screen_understanding tool captures one image of the primary display
 locally, only when the user explicitly asks what is visible, asks you to look
 at or describe the screen, identify an open application, or read visible text.
-It sends the in-memory image only to the configured local Ollama vision model,
+It sends the in-memory image only to the configured local vision provider,
 and returns the model's answer. Never claim or infer screen details unless
 that tool succeeds. Do not use it for a general question unrelated to the
 current screen.
@@ -322,7 +325,7 @@ class AIService:
                     messages,
                     allowed_tool_names=explicitly_requested_tools,
                 )
-        except AIProviderError as error:
+        except (AIProviderError, ProviderError) as error:
             raise AIServiceError("The local AI provider could not respond.") from error
 
         if self._role is VeronicaRole.TEACHER and not use_tools:
@@ -349,7 +352,7 @@ class AIService:
                     retry_response = self._provider.generate_response(
                         retry_messages
                     )
-                except AIProviderError:
+                except (AIProviderError, ProviderError):
                     retry_response = ""
                 retry_candidate = (
                     retry_response if isinstance(retry_response, str) else ""
@@ -369,17 +372,25 @@ class AIService:
 
         if not isinstance(response, str) or not response.strip():
             raise AIServiceError("The local AI provider returned no assistant text.")
-        if (
-            not use_tools
-            and contains_web_search_tool_marker(response)
-        ):
-            raise AIServiceError(
-                "Web Search is disabled; enable WEB_SEARCH_ENABLED to use it."
-            )
-        if contains_tool_call_envelope(response):
-            raise AIServiceError(
-                "The model returned a tool-call envelope as text; no tool was executed."
-            )
+        if isinstance(self._provider, ToolCallTextParser):
+            try:
+                text_tool_call = self._provider.parse_tool_call_text(response)
+            except (AIProviderError, ProviderError) as error:
+                raise AIServiceError(
+                    "The local AI provider could not interpret its response."
+                ) from error
+            if text_tool_call is not None:
+                if not isinstance(text_tool_call, ToolCall):
+                    raise AIServiceError(
+                        "The local AI provider returned an invalid tool request."
+                    )
+                if not use_tools and text_tool_call.name == "web_search":
+                    raise AIServiceError(
+                        "Web Search is disabled; enable WEB_SEARCH_ENABLED to use it."
+                    )
+                raise AIServiceError(
+                    "The model returned a tool-call envelope as text; no tool was executed."
+                )
 
         response = response.strip()
         if (

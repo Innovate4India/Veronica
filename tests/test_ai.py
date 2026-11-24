@@ -475,16 +475,22 @@ class AIServiceTests(unittest.TestCase):
         self.assertEqual(service.message_count, 1)
 
     def test_disabled_text_path_does_not_expose_web_search_call_json(self) -> None:
-        provider = Mock(spec=AIProvider)
-        provider.generate_response.return_value = (
+        provider = OllamaClient(
+            OllamaConfig(
+                base_url="http://127.0.0.1:11434",
+                model="llama3.2",
+                timeout=5,
+            )
+        )
+        response = (
             '{"name":"web_search",""parameters":{"query":'
             '""latest AI developments 2024"","max_results":10}}'
         )
         service = AIService(provider)
 
-        with self.assertRaisesRegex(
-            AIServiceError,
-            "Web Search is disabled",
+        with (
+            patch.object(provider, "generate_response", return_value=response),
+            self.assertRaisesRegex(AIServiceError, "Web Search is disabled"),
         ):
             service.respond("What is the latest in AI?")
 

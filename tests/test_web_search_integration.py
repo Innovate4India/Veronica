@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 import dev_ai
 from app.ai.ollama_client import (
+    OllamaClient,
     OllamaAssistantResponse,
     OllamaChatMessage,
     OllamaToolCall,
@@ -76,10 +77,14 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
             timeout_seconds=2,
         )
 
+    def _ollama_client(self) -> OllamaClient:
+        client = OllamaClient(self.ollama_config)
+        client.list_models = Mock(return_value=("llama3.2:latest",))
+        client.generate_response = Mock()
+        client.generate_tool_response = Mock()
+        return client
+
     def _base_patches(self, stack: ExitStack, *, enabled: bool) -> None:
-        stack.enter_context(
-            patch("dev_ai.load_ollama_config", return_value=self.ollama_config)
-        )
         stack.enter_context(
             patch(
                 "dev_ai.load_spoken_response_config",
@@ -98,8 +103,7 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
         stack.enter_context(patch("dev_ai.MEMORY_DATABASE_PATH", self.memory_path))
 
     def test_search_round_trip_reaches_output_and_speaks_only_final_answer(self) -> None:
-        client = Mock()
-        client.list_models.return_value = ("llama3.2:latest",)
+        client = self._ollama_client()
         responses = iter([
             OllamaAssistantResponse(
                 '{"name":"web_search",""parameters":{"query":'
@@ -139,7 +143,7 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
             stack.enter_context(
                 patch("dev_ai.load_web_search_config", return_value=self.web_config)
             )
-            stack.enter_context(patch("dev_ai.OllamaClient", return_value=client))
+            stack.enter_context(patch("dev_ai._create_provider", return_value=client))
             stack.enter_context(patch("dev_ai.MicrosoftNeuralTTS", return_value=tts))
             stack.enter_context(
                 patch("builtins.input", side_effect=[_SEARCH_QUERY, "/exit"])
@@ -230,18 +234,16 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
         self.assertEqual(memory_service.list_memories(), [])
 
     def test_enabled_tool_service_does_not_search_when_model_returns_normal_text(self) -> None:
-        client = Mock()
-        client.list_models.return_value = ("llama3.2:latest",)
+        client = self._ollama_client()
         client.generate_response.return_value = (
             "This does not need current web information."
         )
         with (
-            patch("dev_ai.load_ollama_config", return_value=self.ollama_config),
             patch("dev_ai.load_spoken_response_config", return_value=_spoken_config(enabled=False)),
             patch("dev_ai.load_web_search_enabled", return_value=True),
             patch("dev_ai.load_web_search_config", return_value=self.web_config),
             patch("dev_ai.MEMORY_DATABASE_PATH", self.memory_path),
-            patch("dev_ai.OllamaClient", return_value=client),
+            patch("dev_ai._create_provider", return_value=client),
             patch("dev_ai.MicrosoftNeuralTTS") as tts_factory,
             patch("builtins.input", side_effect=["What is Python?", "/exit"]),
             patch("app.tools.web_search.urlopen") as tavily_request,
@@ -260,15 +262,14 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
         tts_factory.assert_not_called()
 
     def test_disabled_search_uses_unchanged_text_path_without_tools_or_network(self) -> None:
-        client = Mock()
-        client.list_models.return_value = ("llama3.2:latest",)
+        client = self._ollama_client()
         client.generate_response.return_value = "An ordinary local answer."
         with ExitStack() as stack:
             self._base_patches(stack, enabled=False)
             search_config_loader = stack.enter_context(
                 patch("dev_ai.load_web_search_config")
             )
-            stack.enter_context(patch("dev_ai.OllamaClient", return_value=client))
+            stack.enter_context(patch("dev_ai._create_provider", return_value=client))
             stack.enter_context(patch("dev_ai.MicrosoftNeuralTTS"))
             stack.enter_context(patch("builtins.input", side_effect=["Hello", "/exit"]))
             tavily_request = stack.enter_context(
@@ -286,8 +287,7 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
         tavily_request.assert_not_called()
 
     def test_disabled_search_does_not_display_model_tool_call_json(self) -> None:
-        client = Mock()
-        client.list_models.return_value = ("llama3.2:latest",)
+        client = self._ollama_client()
         malformed = (
             '{"name":"web_search",""parameters":{"query":'
             '""latest AI developments 2024"","max_results":10}}'
@@ -298,7 +298,7 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
             search_config_loader = stack.enter_context(
                 patch("dev_ai.load_web_search_config")
             )
-            stack.enter_context(patch("dev_ai.OllamaClient", return_value=client))
+            stack.enter_context(patch("dev_ai._create_provider", return_value=client))
             tts_factory = stack.enter_context(patch("dev_ai.MicrosoftNeuralTTS"))
             stack.enter_context(
                 patch("builtins.input", side_effect=["latest AI", "/exit"])
@@ -321,8 +321,7 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
         tts_factory.return_value.speak.assert_not_called()
 
     def test_missing_key_is_returned_to_ollama_as_unavailable_not_fabricated(self) -> None:
-        client = Mock()
-        client.list_models.return_value = ("llama3.2:latest",)
+        client = self._ollama_client()
         client.generate_tool_response.side_effect = [
             OllamaAssistantResponse(
                 "",
@@ -334,12 +333,11 @@ class WebSearchConversationIntegrationTests(unittest.TestCase):
         ]
         no_key_config = WebSearchConfig("tavily", "")
         with (
-            patch("dev_ai.load_ollama_config", return_value=self.ollama_config),
             patch("dev_ai.load_spoken_response_config", return_value=_spoken_config(enabled=False)),
             patch("dev_ai.load_web_search_enabled", return_value=True),
             patch("dev_ai.load_web_search_config", return_value=no_key_config),
             patch("dev_ai.MEMORY_DATABASE_PATH", self.memory_path),
-            patch("dev_ai.OllamaClient", return_value=client),
+            patch("dev_ai._create_provider", return_value=client),
             patch("builtins.input", side_effect=[_SEARCH_QUERY, "/exit"]),
             patch("app.tools.web_search.urlopen") as tavily_request,
             redirect_stdout(StringIO()) as output,

@@ -5,17 +5,26 @@ import io
 import json
 import logging
 import unittest
-from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from app.ai import AIService, LocalVisionService, OllamaClient
+from app.ai import (
+    AIService,
+    LocalVisionService,
+    OllamaClient,
+    OllamaToolCallingService,
+    ProviderResponseError,
+    VisionRequest,
+    VisionResponse,
+)
 from app.ai.ollama_client import (
     OllamaAssistantResponse,
     OllamaConnectionError,
     OllamaModelUnavailableError,
     OllamaResponseError,
+    LegacyOllamaVisionProvider,
     OllamaToolCall,
     OllamaTimeoutError,
 )
@@ -29,7 +38,7 @@ from app.tools import (
     ToolStatus,
     WebSearchTool,
 )
-from app.ai.tool_calling import OllamaToolCallingService, ToolCallingServiceError
+from app.ai.tool_calling import ToolCallingServiceError
 
 
 def _error_message(result: ToolResult) -> str:
@@ -46,11 +55,16 @@ def _result_data(result: ToolResult) -> dict[str, JSONValue]:
 
 class ScreenUnderstandingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.image = SimpleNamespace(close=Mock(), size=(800, 600))
+        self.image = Image.new("RGB", (800, 600))
+        close_patch = patch.object(self.image, "close", wraps=self.image.close)
+        self.image_close_mock = close_patch.start()
+        self.addCleanup(close_patch.stop)
         self.client = Mock()
         self.client.list_models.return_value = ("vision-local:latest",)
         self.client.generate_vision_response.return_value = "A text editor is open."
-        self.vision = LocalVisionService(self.client, "vision-local")
+        self.vision = LocalVisionService(
+            LegacyOllamaVisionProvider(self.client, "vision-local")
+        )
         self.tool = ScreenUnderstandingTool(self.vision)
         self.registry = ToolRegistry()
         self.registry.register(self.tool)
@@ -82,10 +96,12 @@ class ScreenUnderstandingTests(unittest.TestCase):
             "What application is open?",
             self.image,
         )
-        self.image.close.assert_called_once_with()
+        self.image_close_mock.assert_called_once_with()
 
     def test_missing_vision_model_returns_unavailable_without_capture(self) -> None:
-        tool = ScreenUnderstandingTool(LocalVisionService(self.client, ""))
+        tool = ScreenUnderstandingTool(
+            LocalVisionService(LegacyOllamaVisionProvider(self.client, ""))
+        )
         registry = ToolRegistry()
         registry.register(tool)
 
@@ -106,7 +122,20 @@ class ScreenUnderstandingTests(unittest.TestCase):
                 self.assertEqual(result.status, ToolStatus.VALIDATION_FAILURE)
         self.client.list_models.assert_not_called()
         self.capture_mock.assert_not_called()
-        self.assertFalse(self.image.close.called)
+        self.image_close_mock.assert_not_called()
+
+    def test_provider_without_vision_fails_closed_without_capture(self) -> None:
+        tool = ScreenUnderstandingTool(LocalVisionService(None))
+        registry = ToolRegistry()
+        registry.register(tool)
+
+        result = registry.execute(
+            "screen_understanding",
+            {"question": "What is visible?"},
+        )
+
+        self.assertEqual(result.status, ToolStatus.UNAVAILABLE)
+        self.capture_mock.assert_not_called()
 
     def test_url_path_base64_and_arbitrary_overrides_are_rejected(self) -> None:
         invalid_parameters: tuple[object, ...] = (
@@ -128,7 +157,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
                 self.assertEqual(result.status, ToolStatus.VALIDATION_FAILURE)
         self.client.list_models.assert_not_called()
         self.capture_mock.assert_not_called()
-        self.assertFalse(self.image.close.called)
+        self.image_close_mock.assert_not_called()
 
     def test_uninstalled_configured_model_is_unavailable_before_capture(self) -> None:
         self.client.list_models.return_value = ("llama3.2:latest",)
@@ -139,7 +168,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
         self.assertIn("not installed", _error_message(result))
         self.client.generate_vision_response.assert_not_called()
         self.capture_mock.assert_not_called()
-        self.assertFalse(self.image.close.called)
+        self.image_close_mock.assert_not_called()
 
     def test_ollama_unavailable_is_returned_without_capture(self) -> None:
         self.client.list_models.side_effect = OllamaConnectionError("private detail")
@@ -153,7 +182,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
         )
         self.assertNotIn("private detail", _error_message(result))
         self.capture_mock.assert_not_called()
-        self.assertFalse(self.image.close.called)
+        self.image_close_mock.assert_not_called()
 
     def test_ollama_unavailable_during_vision_call_closes_capture(self) -> None:
         self.client.generate_vision_response.side_effect = OllamaConnectionError(
@@ -168,7 +197,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
             "The local Ollama vision service is unavailable.",
         )
         self.assertNotIn("private connection detail", _error_message(result))
-        self.image.close.assert_called_once_with()
+        self.image_close_mock.assert_called_once_with()
 
     def test_missing_model_during_generation_is_unavailable(self) -> None:
         self.client.generate_vision_response.side_effect = (
@@ -182,7 +211,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
             _error_message(result),
             "The configured local vision model is unavailable.",
         )
-        self.image.close.assert_called_once_with()
+        self.image_close_mock.assert_called_once_with()
 
     def test_timeout_during_vision_request_has_timeout_status_and_closes_image(self) -> None:
         self.client.generate_vision_response.side_effect = OllamaTimeoutError(
@@ -196,7 +225,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
             _error_message(result),
             "Tool execution exceeded its permitted time.",
         )
-        self.image.close.assert_called_once_with()
+        self.image_close_mock.assert_called_once_with()
 
     def test_capture_failure_is_structured_and_does_not_expose_exception(self) -> None:
         self.capture.stop()
@@ -214,7 +243,58 @@ class ScreenUnderstandingTests(unittest.TestCase):
         result = self._execute({"question": "What is visible?"})
         self.assertEqual(result.status, ToolStatus.EXECUTION_FAILURE)
         self.assertEqual(_error_message(result), "Tool execution failed.")
-        self.image.close.assert_called_once_with()
+        self.image_close_mock.assert_called_once_with()
+
+    def test_vision_provider_responses_are_validated_and_capture_is_closed(self) -> None:
+        class FakeVisionProvider:
+            model_configured = True
+
+            def __init__(self, response: object) -> None:
+                self.response = response
+
+            def model_available(self) -> bool:
+                return True
+
+            def generate_vision(self, request: VisionRequest) -> VisionResponse:
+                return cast(VisionResponse, self.response)
+
+        invalid_responses = (
+            object(),
+            VisionResponse(text=cast(str, 42)),
+            VisionResponse(text=""),
+            VisionResponse(text=" \t "),
+        )
+        for response in invalid_responses:
+            with self.subTest(response=response):
+                image = Image.new("RGB", (2, 2))
+                with (
+                    patch.object(image, "close", wraps=image.close) as close,
+                    patch(
+                        "app.ai.vision.capture_primary_screen",
+                        return_value=image,
+                    ),
+                ):
+                    service = LocalVisionService(FakeVisionProvider(response))
+                    with self.assertRaises(ProviderResponseError):
+                        service.understand_primary_screen("Describe the screen.")
+                close.assert_called_once_with()
+
+        image = Image.new("RGB", (2, 2))
+        with (
+            patch.object(image, "close", wraps=image.close) as close,
+            patch(
+                "app.ai.vision.capture_primary_screen",
+                return_value=image,
+            ),
+        ):
+            service = LocalVisionService(
+                FakeVisionProvider(VisionResponse(text="  Screen description.  "))
+            )
+            self.assertEqual(
+                service.understand_primary_screen("Describe the screen."),
+                "Screen description.",
+            )
+        close.assert_called_once_with()
 
     def test_tool_result_and_logs_never_contain_image_bytes_or_answer(self) -> None:
         with self.assertLogs("app.tools.registry", level=logging.INFO) as captured:
@@ -323,7 +403,7 @@ class ScreenUnderstandingTests(unittest.TestCase):
         second_turn_messages = provider.generate_tool_response.call_args_list[1].args[0]
         self.assertNotIn("images", json.dumps(second_turn_messages))
         self.assertNotIn("base64", json.dumps(second_turn_messages).casefold())
-        self.image.close.assert_called_once_with()
+        self.image_close_mock.assert_called_once_with()
 
     def test_screen_results_cannot_trigger_external_followup_tools(self) -> None:
         search_provider = Mock()

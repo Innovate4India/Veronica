@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from app.ai import OllamaToolCallingService
 from app.ai.ollama_client import OllamaAssistantResponse, OllamaToolCall
-from app.config import WebSearchConfig
+from app.config import OllamaConfig, WebSearchConfig
 from app.ai.ollama_client import OllamaClient
 from app.tools import JSONValue, ScreenshotTool, ToolRegistry, ToolResult, ToolStatus
 from app.tools.screenshot import capture_primary_screen
@@ -56,8 +56,7 @@ class ScreenshotToolTests(unittest.TestCase):
         self.assertGreaterEqual(duration_ms, 0)
         self.assertEqual(
             data["message"],
-            "Screenshot captured locally. Screen understanding is not "
-            "implemented yet.",
+            "Screenshot captured locally. This tool returns metadata only.",
         )
         self.assertNotIn(self.image, data.values())
         self.image.close.assert_called_once_with()
@@ -153,8 +152,12 @@ class ScreenshotToolTests(unittest.TestCase):
         for expected in (
             "explicitly asks",
             "primary display locally",
-            "does not provide image bytes to Ollama",
+            "does not provide image bytes to an AI provider",
             "does not interpret the image",
+            "separate screen_understanding tool",
+            "only when it is available",
+            "If it is unavailable",
+            "image interpretation is unavailable",
             "never describe or infer screen contents",
         ):
             with self.subTest(expected=expected):
@@ -164,7 +167,7 @@ class ScreenshotToolTests(unittest.TestCase):
         registry = _create_tool_registry(
             WebSearchConfig("tavily", "test-key"),
             (Path("D:/veronica"),),
-            Mock(spec=OllamaClient),
+            OllamaClient(OllamaConfig("http://127.0.0.1:11434", "llama3.2", 5)),
         )
 
         self.assertEqual(
@@ -194,7 +197,7 @@ class ScreenshotToolTests(unittest.TestCase):
         registry = _create_tool_registry(
             WebSearchConfig("tavily", "test-key"),
             (Path("D:/veronica"),),
-            Mock(spec=OllamaClient),
+            OllamaClient(OllamaConfig("http://127.0.0.1:11434", "llama3.2", 5)),
         )
         image = self.image
         with patch(

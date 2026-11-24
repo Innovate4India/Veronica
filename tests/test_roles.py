@@ -11,6 +11,7 @@ from app.ai import (
     OllamaAssistantResponse,
     OllamaToolCall,
     OllamaToolCallingService,
+    ToolCall,
     RoleDecision,
     TeachingLanguage,
     TeachingSubject,
@@ -692,6 +693,12 @@ class RoleSelectionTests(unittest.TestCase):
             with self.subTest(user_message=user_message):
                 provider = Mock(spec=AIProvider)
                 provider.generate_response.return_value = raw_call
+                provider.parse_tool_call_text = Mock(
+                    return_value=ToolCall(
+                        "system_info",
+                        {"category": "overview"},
+                    )
+                )
                 tool_service = Mock()
                 if tool_response is not None:
                     tool_service.respond.return_value = tool_response

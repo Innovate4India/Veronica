@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import Mock
 
-from app.ai import AIProvider, AIService, AIServiceError, TeachingLanguage
+from app.ai import AIProvider, AIService, AIServiceError, TeachingLanguage, ToolCall
 from app.ai.teacher_quality import (
     safe_teacher_response,
     teacher_quality_guidance,
@@ -219,6 +219,12 @@ class TeacherResponsePipelineTests(unittest.TestCase):
         provider = Mock(spec=AIProvider)
         provider.generate_response.return_value = (
             '{"name":"system_info","parameters":{"category":"overview"}}'
+        )
+        provider.parse_tool_call_text = Mock(
+            return_value=ToolCall(
+                "system_info",
+                {"category": "overview"},
+            )
         )
         service = AIService(provider)
 

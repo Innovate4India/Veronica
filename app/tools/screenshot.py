@@ -38,10 +38,12 @@ class ScreenshotTool(Tool):
             "the screen, or look at the current screen (for example, 'Take a "
             "screenshot', 'Capture my screen', 'What's on my screen?', or "
             "'Look at my screen'). This tool does not provide image bytes to "
-            "Ollama and does not interpret the image. After a successful "
-            "capture, tell the user that screen understanding is not "
-            "implemented yet; never describe or infer screen contents. Do not "
-            "capture unless explicitly requested. No monitoring, recording, "
+            "an AI provider and does not interpret the image. For image "
+            "interpretation, use the separate screen_understanding tool only "
+            "when it is available. If it is unavailable, tell the user that "
+            "image interpretation is unavailable; never describe or infer "
+            "screen contents. Do not capture unless explicitly requested. "
+            "No monitoring, recording, "
             "upload, saving, or computer control is performed."
         )
 
@@ -70,8 +72,7 @@ class ScreenshotTool(Tool):
                 "format": "PNG",
                 "capture_duration_ms": duration_ms,
                 "message": (
-                    "Screenshot captured locally. Screen understanding is not "
-                    "implemented yet."
+                    "Screenshot captured locally. This tool returns metadata only."
                 ),
             }
         finally:
