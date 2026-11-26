@@ -36,6 +36,9 @@ from app.memory import (
     SensitiveMemoryError,
     detect_memory_intent,
 )
+from app.services.composition import compose_chat_use_case
+from app.services.contracts.chat import ChatRequest
+from app.services.use_cases.chat import ChatUseCase
 from app.voice import TextToSpeechProvider, VoiceError
 from app.voice.microsoft_tts import MicrosoftNeuralTTS
 from app.tools import (
@@ -130,7 +133,7 @@ def _print_memories(memories: list[Memory]) -> None:
 
 def _handle_command(
     command: str,
-    service: AIService,
+    chat_use_case: ChatUseCase,
     memory_service: MemoryService,
     state: _CommandState,
 ) -> bool:
@@ -141,11 +144,11 @@ def _handle_command(
         print("Goodbye.")
         return True
     if lowered == "/clear":
-        service.clear()
+        chat_use_case.clear_conversation()
         print("Conversation cleared.")
     elif lowered == "/history":
         print(
-            f"Conversation messages: {service.message_count} "
+            f"Conversation messages: {chat_use_case.message_count} "
             "(including system prompt)."
         )
     elif lowered == "/help":
@@ -283,6 +286,7 @@ def main() -> int:
         memory_service=memory_service,
         tool_calling_service=tool_calling_service,
     )
+    chat_use_case = compose_chat_use_case(service)
     speech_provider = (
         MicrosoftNeuralTTS(spoken_response_config)
         if spoken_response_config.enabled
@@ -322,7 +326,7 @@ def main() -> int:
             try:
                 if _handle_command(
                     user_message,
-                    service,
+                    chat_use_case,
                     memory_service,
                     command_state,
                 ):
@@ -331,7 +335,7 @@ def main() -> int:
                 print(f"Local memory operation failed: {error}", file=sys.stderr)
             continue
         try:
-            response = service.respond(user_message)
+            response = chat_use_case.execute(ChatRequest(user_message)).response
             print(f"Veronica: {response}")
             if (
                 speech_provider is not None

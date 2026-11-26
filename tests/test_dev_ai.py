@@ -29,6 +29,7 @@ from app.ai import (
 from app.ai.base import ProviderError
 from app.config import OllamaConfig, SpokenResponseConfig, WebSearchConfig
 from app.memory import MemoryService
+from app.services.composition import compose_chat_use_case
 from app.tools import ToolRegistry
 from app.voice import VoiceModelUnavailableError
 
@@ -54,6 +55,7 @@ class DeveloperChatCommandTests(unittest.TestCase):
         self.provider.generate_response.return_value = "Hello!"
         self.service = AIService(self.provider)
         self.service.respond("Hello")
+        self.chat_use_case = compose_chat_use_case(self.service)
         self.temporary_directory = TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.memory_service = MemoryService(
@@ -65,7 +67,7 @@ class DeveloperChatCommandTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             should_exit = dev_ai._handle_command(
-                "/clear", self.service, self.memory_service, self.state
+                "/clear", self.chat_use_case, self.memory_service, self.state
             )
 
         self.assertFalse(should_exit)
@@ -76,7 +78,7 @@ class DeveloperChatCommandTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             dev_ai._handle_command(
-                "/history", self.service, self.memory_service, self.state
+                "/history", self.chat_use_case, self.memory_service, self.state
             )
 
         self.assertIn("Conversation messages: 3", output.getvalue())
@@ -85,7 +87,7 @@ class DeveloperChatCommandTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             dev_ai._handle_command(
-                "/help", self.service, self.memory_service, self.state
+                "/help", self.chat_use_case, self.memory_service, self.state
             )
 
         for command in (
@@ -106,7 +108,7 @@ class DeveloperChatCommandTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             should_exit = dev_ai._handle_command(
-                "/exit", self.service, self.memory_service, self.state
+                "/exit", self.chat_use_case, self.memory_service, self.state
             )
 
         self.assertTrue(should_exit)
@@ -117,24 +119,24 @@ class DeveloperChatCommandTests(unittest.TestCase):
         with redirect_stdout(output):
             dev_ai._handle_command(
                 "/remember My main project is Veronica.",
-                self.service,
+                self.chat_use_case,
                 self.memory_service,
                 self.state,
             )
             dev_ai._handle_command(
-                "/memory", self.service, self.memory_service, self.state
+                "/memory", self.chat_use_case, self.memory_service, self.state
             )
             dev_ai._handle_command(
                 "/memory-search Veronica",
-                self.service,
+                self.chat_use_case,
                 self.memory_service,
                 self.state,
             )
             dev_ai._handle_command(
-                "/forget 1", self.service, self.memory_service, self.state
+                "/forget 1", self.chat_use_case, self.memory_service, self.state
             )
             dev_ai._handle_command(
-                "/memory", self.service, self.memory_service, self.state
+                "/memory", self.chat_use_case, self.memory_service, self.state
             )
 
         transcript = output.getvalue()
@@ -149,7 +151,10 @@ class DeveloperChatCommandTests(unittest.TestCase):
 
         with redirect_stdout(output):
             dev_ai._handle_command(
-                "/clear-memory", self.service, self.memory_service, self.state
+                "/clear-memory",
+                self.chat_use_case,
+                self.memory_service,
+                self.state,
             )
             self.assertTrue(self.state.pending_memory_clear)
             dev_ai._confirm_memory_clear(
